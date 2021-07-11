@@ -24,6 +24,7 @@ local proxy = ucic:get_first(name, 'server_subscribe', 'proxy', '0')
 local switch = ucic:get_first(name, 'server_subscribe', 'switch', '1')
 local subscribe_url = ucic:get_first(name, 'server_subscribe', 'subscribe_url', {})
 local filter_words = ucic:get_first(name, 'server_subscribe', 'filter_words', '过期时间/剩余流量')
+local v2_ss = luci.sys.exec('type -t -p ss-redir sslocal') ~= "" and "ss" or "v2ray"
 local v2_tj = luci.sys.exec('type -t -p trojan') ~= "" and "trojan" or "v2ray"
 local log = function(...)
 	print(os.date("%Y-%m-%d %H:%M:%S ") .. table.concat({...}, " "))
@@ -220,7 +221,8 @@ local function processData(szType, content)
 		local method = userinfo:sub(1, userinfo:find(":") - 1)
 		local password = userinfo:sub(userinfo:find(":") + 1, #userinfo)
 		result.alias = UrlDecode(alias)
-		result.type = "ss"
+		result.type = v2_ss
+		result.v2ray_protocol = "shadowsocks"
 		result.server = host[1]
 		if host[2]:find("/%?") then
 			local query = split(host[2], "/%?")
@@ -239,6 +241,10 @@ local function processData(szType, content)
 				else
 					result.plugin = plugin_info
 				end
+				-- 部分机场下发的插件名为 simple-obfs，这里应该改为 obfs-local
+				if result.plugin == "simple-obfs" then
+					result.plugin = "obfs-local"
+				end
 			end
 		else
 			result.server_port = host[2]
@@ -251,7 +257,8 @@ local function processData(szType, content)
 			result.server = nil
 		end
 	elseif szType == "ssd" then
-		result.type = "ss"
+		result.type = v2_ss
+		result.v2ray_protocol = "shadowsocks"
 		result.server = content.server
 		result.server_port = content.port
 		result.password = content.password
@@ -260,8 +267,9 @@ local function processData(szType, content)
 		result.plugin_opts = content.plugin_options
 		result.alias = "[" .. content.airport .. "] " .. content.remarks
 		if checkTabValue(encrypt_methods_ss)[result.encrypt_method_ss] then
-			-- 1202 年了还不支持 SS AEAD 的屑机场
 			result.server = nil
+		elseif result.plugin == "simple-obfs" then
+			result.plugin = "obfs-local"
 		end
 	elseif szType == "trojan" then
 		local idx_sp = 0
@@ -327,7 +335,7 @@ local function processData(szType, content)
 			if not params.type or params.type == "tcp" then
 				if params.security == "xtls" then
 					result.xtls = "1"
-					result.tls_host = params.sni or host[1]
+					result.tls_host = params.sni
 					result.vless_flow = params.flow
 				else
 					result.xtls = "0"
@@ -338,7 +346,7 @@ local function processData(szType, content)
 				result.ws_path = params.path or "/"
 			end
 			if params.type == 'http' then
-				result.h2_host = params.host or host[1]
+				result.h2_host = params.host
 				result.h2_path = params.path or "/"
 			end
 			if params.type == 'kcp' then
@@ -359,10 +367,9 @@ local function processData(szType, content)
 			if params.type == 'grpc' then
 				result.serviceName = params.serviceName
 			end
-			
 			if params.security == "tls" then
 				result.tls = "1"
-				result.tls_host = params.sni or host[1]
+				result.tls_host = params.sni
 			else
 				result.tls = "0"
 			end
@@ -389,7 +396,7 @@ local function processData(szType, content)
 end
 -- wget
 local function wget(url)
-	local stdout = luci.sys.exec('wget -q --user-agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/44.0.2403.157 Safari/537.36" --no-check-certificate -O- "' .. url .. '"')
+	local stdout = luci.sys.exec('uclient-fetch -q --user-agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/44.0.2403.157 Safari/537.36" --no-check-certificate -O- "' .. url .. '"')
 	return trim(stdout)
 end
 
@@ -462,7 +469,7 @@ local execute = function()
 						-- log(result)
 						if result then
 							-- 中文做地址的 也没有人拿中文域名搞，就算中文域也有Puny Code SB 机场
-							if not result.server or not result.server_port or result.alias == "NULL" or check_filer(result) or result.server:match("[^0-9a-zA-Z%-%.%s]") then
+							if not result.server or not result.server_port or result.alias == "NULL" or check_filer(result) or result.server:match("[^0-9a-zA-Z%-%.%s]") or cache[groupHash][result.hashkey] then
 								log('丢弃无效节点: ' .. result.type .. ' 节点, ' .. result.alias)
 							else
 								-- log('成功解析: ' .. result.type ..' 节点, ' .. result.alias)
